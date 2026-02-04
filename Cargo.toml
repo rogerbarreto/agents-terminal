@@ -1,0 +1,62 @@
+[package]
+name = "pixel-terminal"
+version = "0.1.0"
+edition = "2021"
+description = "A high-resolution pixel-capable terminal emulator"
+license = "MIT"
+
+[dependencies]
+# Window management
+winit = "0.29"
+
+# GPU rendering
+wgpu = "0.19"
+
+# Bytemuck for vertex data
+bytemuck = { version = "1.14", features = ["derive"] }
+
+# Font rendering
+ab_glyph = "0.2"
+
+# Image decoding for inline images
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+# Pseudo-terminal for shell integration
+portable-pty = "0.8"
+
+# Async runtime
+pollster = "0.3"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# ANSI parsing
+vte = "0.13"
+
+# Configuration
+toml = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Base64 for image protocol
+base64 = "0.22"
+
+# Unicode handling
+unicode-width = "0.1"
+unicode-segmentation = "1.10"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Layout engine (flexbox)
+taffy = "0.4"
+
+# Windows API for stdin detection
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["fileapi", "winbase"] }
+
+[profile.release]
+opt-level = 3
+lto = true
