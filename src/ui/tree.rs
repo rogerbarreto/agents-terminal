@@ -8,6 +8,65 @@ use super::layout::{LayoutEngine, ComputedLayout};
 use super::events::EventManager;
 use super::protocol::{PtuiProtocol, PtuiMessage, PtuiEvent};
 
+/// Recursively find and update a component by ID
+fn update_component_recursive(component: &mut Component, id: &str, props: &serde_json::Value) -> bool {
+    // Check if this is the component to update
+    if component.id() == Some(id) {
+        apply_props(component, props);
+        return true;
+    }
+    
+    // Check children
+    match component {
+        Component::Container(c) | Component::Row(c) | Component::Col(c) => {
+            for child in &mut c.children {
+                if update_component_recursive(child, id, props) {
+                    return true;
+                }
+            }
+        }
+        _ => {}
+    }
+    
+    false
+}
+
+/// Apply property updates to a component
+fn apply_props(component: &mut Component, props: &serde_json::Value) {
+    match component {
+        Component::Progress(p) => {
+            if let Some(value) = props.get("value").and_then(|v| v.as_f64()) {
+                p.value = value as f32;
+            }
+            if let Some(label) = props.get("label").and_then(|v| v.as_str()) {
+                p.label = Some(label.to_string());
+            }
+            if let Some(max) = props.get("max").and_then(|v| v.as_f64()) {
+                p.max = max as f32;
+            }
+        }
+        Component::Text(t) => {
+            if let Some(content) = props.get("content").and_then(|v| v.as_str()) {
+                t.content = content.to_string();
+            }
+            if let Some(size) = props.get("size").and_then(|v| v.as_f64()) {
+                t.size = Some(size as f32);
+            }
+        }
+        Component::Button(b) => {
+            if let Some(label) = props.get("label").and_then(|v| v.as_str()) {
+                b.label = label.to_string();
+            }
+            if let Some(disabled) = props.get("disabled").and_then(|v| v.as_bool()) {
+                b.disabled = disabled;
+            }
+        }
+        _ => {
+            debug!("Property updates not implemented for this component type");
+        }
+    }
+}
+
 /// Manages the component tree and rendering
 pub struct ComponentTree {
     /// Root components (by ID or index)
@@ -70,8 +129,7 @@ impl ComponentTree {
                 None
             }
             Ok(PtuiMessage::Update(update)) => {
-                // TODO: Update component by ID
-                debug!("Update component {}: {:?}", update.update, update.props);
+                self.update_component(&update.update, &update.props);
                 None
             }
             Ok(PtuiMessage::Remove(remove)) => {
@@ -85,13 +143,29 @@ impl ComponentTree {
         }
     }
 
-    /// Add a component to the tree
+    /// Add a component to the tree (replaces existing with same ID)
     pub fn add_component(&mut self, component: Component) {
+        // If component has an ID, remove any existing component with same ID
+        if let Some(id) = component.id() {
+            self.roots.retain(|c| c.id() != Some(id));
+        }
+        
         // Collect focusable component IDs
         self.collect_focusable(&component);
         
         self.roots.push(component);
         self.dirty = true;
+    }
+
+    /// Update a component's properties by ID
+    pub fn update_component(&mut self, id: &str, props: &serde_json::Value) {
+        for component in &mut self.roots {
+            if update_component_recursive(component, id, props) {
+                self.dirty = true;
+                return;
+            }
+        }
+        debug!("Component not found for update: {}", id);
     }
 
     /// Collect focusable component IDs

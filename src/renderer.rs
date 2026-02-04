@@ -645,6 +645,158 @@ impl Renderer {
         Ok(())
     }
 
+    /// Render terminal with PTUI component overlay
+    pub fn render_hybrid(&mut self, terminal: &Terminal, components: &[Component]) -> Result<()> {
+        let output = self.surface.get_current_texture()?;
+        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        
+        let mut vertices: Vec<Vertex> = Vec::new();
+        let mut indices: Vec<u32> = Vec::new();
+        
+        let (width, height) = self.size;
+        let width_f = width as f32;
+        let height_f = height as f32;
+        
+        let to_ndc_x = |x: f32| -> f32 { (x / width_f) * 2.0 - 1.0 };
+        let to_ndc_y = |y: f32| -> f32 { 1.0 - (y / height_f) * 2.0 };
+        
+        // === LAYER 1: Terminal cells ===
+        for row in 0..terminal.rows as usize {
+            for col in 0..terminal.cols as usize {
+                if let Some(cell) = terminal.get_cell(row, col) {
+                    let x = col as f32 * self.cell_width;
+                    let y = row as f32 * self.cell_height;
+                    
+                    // Background quad
+                    let bg_color = [cell.bg_color[0], cell.bg_color[1], cell.bg_color[2], 1.0];
+                    let base_idx = vertices.len() as u32;
+                    
+                    vertices.push(Vertex { position: [to_ndc_x(x), to_ndc_y(y)], tex_coord: [0.0, 0.0], color: bg_color });
+                    vertices.push(Vertex { position: [to_ndc_x(x + self.cell_width), to_ndc_y(y)], tex_coord: [1.0, 0.0], color: bg_color });
+                    vertices.push(Vertex { position: [to_ndc_x(x + self.cell_width), to_ndc_y(y + self.cell_height)], tex_coord: [1.0, 1.0], color: bg_color });
+                    vertices.push(Vertex { position: [to_ndc_x(x), to_ndc_y(y + self.cell_height)], tex_coord: [0.0, 1.0], color: bg_color });
+                    
+                    indices.extend_from_slice(&[base_idx, base_idx + 1, base_idx + 2, base_idx, base_idx + 2, base_idx + 3]);
+                    
+                    // Character glyph
+                    if cell.character != ' ' && !cell.wide {
+                        let fg_color = [cell.fg_color[0], cell.fg_color[1], cell.fg_color[2], 1.0];
+                        if let Some(glyph_info) = self.cache_glyph(cell.character) {
+                            let glyph_x = x + glyph_info.bearing_x;
+                            let glyph_y = y + (self.cell_height - glyph_info.bearing_y);
+                            let [u0, v0, u1, v1] = glyph_info.uv;
+                            let base_idx = vertices.len() as u32;
+                            
+                            vertices.push(Vertex { position: [to_ndc_x(glyph_x), to_ndc_y(glyph_y)], tex_coord: [u0, v0], color: fg_color });
+                            vertices.push(Vertex { position: [to_ndc_x(glyph_x + glyph_info.width), to_ndc_y(glyph_y)], tex_coord: [u1, v0], color: fg_color });
+                            vertices.push(Vertex { position: [to_ndc_x(glyph_x + glyph_info.width), to_ndc_y(glyph_y + glyph_info.height)], tex_coord: [u1, v1], color: fg_color });
+                            vertices.push(Vertex { position: [to_ndc_x(glyph_x), to_ndc_y(glyph_y + glyph_info.height)], tex_coord: [u0, v1], color: fg_color });
+                            
+                            indices.extend_from_slice(&[base_idx, base_idx + 1, base_idx + 2, base_idx, base_idx + 2, base_idx + 3]);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Cursor
+        if terminal.cursor.visible {
+            let cursor_x = terminal.cursor.col as f32 * self.cell_width;
+            let cursor_y = terminal.cursor.row as f32 * self.cell_height;
+            let cursor_color = [0.9, 0.9, 0.9, 0.7];
+            let base_idx = vertices.len() as u32;
+            
+            vertices.push(Vertex { position: [to_ndc_x(cursor_x), to_ndc_y(cursor_y)], tex_coord: [0.0, 0.0], color: cursor_color });
+            vertices.push(Vertex { position: [to_ndc_x(cursor_x + self.cell_width), to_ndc_y(cursor_y)], tex_coord: [0.0, 0.0], color: cursor_color });
+            vertices.push(Vertex { position: [to_ndc_x(cursor_x + self.cell_width), to_ndc_y(cursor_y + self.cell_height)], tex_coord: [0.0, 0.0], color: cursor_color });
+            vertices.push(Vertex { position: [to_ndc_x(cursor_x), to_ndc_y(cursor_y + self.cell_height)], tex_coord: [0.0, 0.0], color: cursor_color });
+            
+            indices.extend_from_slice(&[base_idx, base_idx + 1, base_idx + 2, base_idx, base_idx + 2, base_idx + 3]);
+        }
+        
+        // === LAYER 2: PTUI Components (rendered at bottom of screen) ===
+        if !components.is_empty() {
+            // Calculate component area at bottom of screen
+            let component_area_height = 150.0; // Fixed height for component overlay
+            let component_y = height_f - component_area_height;
+            
+            // Semi-transparent background for component area
+            let overlay_bg = [0.1, 0.1, 0.15, 0.95];
+            let base_idx = vertices.len() as u32;
+            
+            vertices.push(Vertex { position: [to_ndc_x(0.0), to_ndc_y(component_y)], tex_coord: [0.0, 0.0], color: overlay_bg });
+            vertices.push(Vertex { position: [to_ndc_x(width_f), to_ndc_y(component_y)], tex_coord: [0.0, 0.0], color: overlay_bg });
+            vertices.push(Vertex { position: [to_ndc_x(width_f), to_ndc_y(height_f)], tex_coord: [0.0, 0.0], color: overlay_bg });
+            vertices.push(Vertex { position: [to_ndc_x(0.0), to_ndc_y(height_f)], tex_coord: [0.0, 0.0], color: overlay_bg });
+            
+            indices.extend_from_slice(&[base_idx, base_idx + 1, base_idx + 2, base_idx, base_idx + 2, base_idx + 3]);
+            
+            // Render components in overlay area
+            let mut y_offset = component_y + 10.0;
+            for component in components {
+                self.render_component(
+                    component,
+                    10.0,
+                    y_offset,
+                    width_f - 20.0,
+                    &mut y_offset,
+                    &to_ndc_x,
+                    &to_ndc_y,
+                    &mut vertices,
+                    &mut indices,
+                );
+            }
+        }
+        
+        // Update atlas and upload data
+        self.update_atlas_texture();
+        
+        if !vertices.is_empty() {
+            self.queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+            self.queue.write_buffer(&self.index_buffer, 0, bytemuck::cast_slice(&indices));
+        }
+        
+        // Render
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Hybrid Render Encoder"),
+        });
+        
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Hybrid Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: self.background_color[0] as f64,
+                            g: self.background_color[1] as f64,
+                            b: self.background_color[2] as f64,
+                            a: self.background_color[3] as f64,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            
+            if !indices.is_empty() {
+                render_pass.set_pipeline(&self.quad_pipeline);
+                render_pass.set_bind_group(0, &self.glyph_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
+            }
+        }
+        
+        self.queue.submit(std::iter::once(encoder.finish()));
+        output.present();
+        
+        Ok(())
+    }
+
     /// Render UI components (for test mode)
     pub fn render_ui(&mut self, components: &[Component]) -> Result<()> {
         let output = self.surface.get_current_texture()?;

@@ -254,6 +254,13 @@ fn run_interactive_mode() -> Result<()> {
     // Create terminal state
     let terminal = Arc::new(Mutex::new(Terminal::new(config.columns, config.rows)));
 
+    // Create component tree for PTUI
+    let mut component_tree = crate::ui::ComponentTree::new();
+    component_tree.set_size(
+        config.columns as f32 * config.font_size as f32 * 0.6,
+        config.rows as f32 * config.font_size as f32 * 1.2,
+    );
+
     // Start the PTY/shell process
     let mut pty_handler = PtyHandler::new(config.shell.clone(), terminal.clone())?;
     pty_handler.spawn()?;
@@ -273,6 +280,7 @@ fn run_interactive_mode() -> Result<()> {
                     WindowEvent::Resized(new_size) => {
                         if new_size.width > 0 && new_size.height > 0 {
                             renderer.resize(new_size.width, new_size.height);
+                            component_tree.set_size(new_size.width as f32, new_size.height as f32);
                             // Update terminal dimensions based on new size
                             let cols = (new_size.width as f32 / (config.font_size as f32 * 0.6)) as u16;
                             let rows = (new_size.height as f32 / (config.font_size as f32 * 1.2)) as u16;
@@ -313,9 +321,21 @@ fn run_interactive_mode() -> Result<()> {
                         // Read any pending PTY output
                         pty_handler.read_output();
 
-                        // Render the terminal
+                        // Process pending PTUI messages
+                        if let Ok(mut term) = terminal.lock() {
+                            let pending: Vec<String> = term.pending_ptui.drain(..).collect();
+                            for msg in pending {
+                                if let Some(response) = component_tree.process_message(&msg) {
+                                    // Send response back through PTY
+                                    let _ = pty_handler.write(response.as_bytes());
+                                }
+                            }
+                        }
+
+                        // Render terminal with PTUI overlay
                         if let Ok(term) = terminal.lock() {
-                            if let Err(e) = renderer.render(&term) {
+                            let components = component_tree.roots();
+                            if let Err(e) = renderer.render_hybrid(&term, components) {
                                 error!("Render error: {}", e);
                             }
                         }
